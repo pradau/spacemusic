@@ -60,6 +60,8 @@ let travelingNotes: TravelingNote[] = [];
 let audioStarted = false;
 /** When true, do not spawn new notes (after Quit). */
 let quitted = false;
+/** When false, the Quit button shows "Start" and restarts the demo. */
+let demoRunning = false;
 let frameCount = 0;
 let lastDebugLogTime = 0;
 /** User-adjustable: 1 = default puck speed. */
@@ -204,12 +206,13 @@ function makePattern(inst: InstrumentDef): void {
   const synth = inst.synth;
   const interval = 0.18 + inst.id * 0.02;
   const loopDur = inst.id === 4 ? "1n" : "2n";
+  const startTime = Tone.Transport.seconds;
   inst.loop = new Tone.Loop((time) => {
     notes.forEach((note, i) => {
       (synth as { triggerAttackRelease(note: string, dur: string, time: number): void })
         .triggerAttackRelease(note, "8n", time + i * interval);
     });
-  }, loopDur).start(0);
+  }, loopDur).start(startTime);
 }
 
 function stopInstrument(inst: InstrumentDef): void {
@@ -407,8 +410,10 @@ function startAudio(): void {
   Tone.start().then(() => {
     Tone.Transport.start();
     audioStarted = true;
+    demoRunning = true;
     overlay.classList.add("hidden");
     quitBtn.classList.add("visible");
+    quitBtn.textContent = "Quit";
     speedPanel.classList.remove("speed-panel-hidden");
     sendNote(0, 1);
   });
@@ -416,6 +421,7 @@ function startAudio(): void {
 
 function quit(): void {
   quitted = true;
+  demoRunning = false;
   Tone.Transport.stop();
   instruments.forEach((inst) => {
     if (inst.loop) {
@@ -425,6 +431,23 @@ function quit(): void {
   });
   travelingNotes.length = 0;
   quitOverlay.classList.remove("hidden");
+  quitBtn.textContent = "Start";
+}
+
+function restart(): void {
+  quitted = false;
+  demoRunning = true;
+  Tone.Transport.start();
+  quitOverlay.classList.add("hidden");
+  quitBtn.textContent = "Quit";
+  const fromId = instruments[Math.floor(Math.random() * instruments.length)]!.id;
+  const toId = randomOtherInstrumentId(fromId);
+  if (toId !== fromId) sendNote(fromId, toId);
+}
+
+function handleQuitOrStart(): void {
+  if (demoRunning) quit();
+  else restart();
 }
 
 function hideQuitOverlay(): void {
@@ -440,7 +463,7 @@ const instrumentSpeedInput = document.getElementById("instrument-speed") as HTML
 
 startBtn.addEventListener("click", startAudio);
 canvas.addEventListener("click", handleClick);
-quitBtn.addEventListener("click", quit);
+quitBtn.addEventListener("click", handleQuitOrStart);
 quitCloseBtn.addEventListener("click", hideQuitOverlay);
 puckSpeedInput.addEventListener("input", () => {
   puckSpeedMultiplier = parseFloat(puckSpeedInput.value) || 1;
