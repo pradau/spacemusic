@@ -6,6 +6,7 @@
 import * as Tone from "tone";
 import { segmentCircleCollisionT } from "./lib/collision";
 import { pulseColor } from "./lib/color";
+import { transposeNote } from "./lib/transpose";
 import { isFiniteNumber } from "./lib/validation";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -25,11 +26,28 @@ const ARRIVAL_THRESHOLD = 40;
 const PULSE_RADIUS_AMOUNT = 0.18;
 /** Pulse: color brightness amount (lerp toward white; higher = more noticeable). */
 const PULSE_COLOR_AMOUNT = 0.5;
+/** Hit feedback: draw ring for this many seconds after trigger. */
+const HIT_FEEDBACK_DURATION_S = 0.25;
 /** Set to true to log debug state periodically to console. */
 const DEBUG_LOG = false;
 const DEBUG_LOG_INTERVAL_MS = 5000;
 
-type SynthLike = Tone.PolySynth<Tone.Synth> | Tone.AMSynth | Tone.PluckSynth | Tone.FMSynth | Tone.MonoSynth;
+/** One note in a riff: note name (e.g. "C4") and Tone.js duration (e.g. "8n"). */
+interface RiffNote {
+  note: string;
+  dur: string;
+}
+
+/** Semitone offset for key: 0 = C, 1 = C#, 2 = D, ... 11 = B. */
+let keySemitones = 0;
+
+type InstrumentSound =
+  | Tone.PolySynth<Tone.Synth>
+  | Tone.AMSynth
+  | Tone.PluckSynth
+  | Tone.FMSynth
+  | Tone.MonoSynth
+  | Tone.Sampler;
 
 interface InstrumentDef {
   id: number;
@@ -40,10 +58,12 @@ interface InstrumentDef {
   radius: number;
   color: string;
   label: string;
-  synth: SynthLike;
+  synth: InstrumentSound;
   loop: Tone.Loop | null;
   /** Number of times the puck has touched this instrument (odd = playing, even = stopped). */
   touchCount: number;
+  /** Transport time when this instrument was last hit (for ring feedback). */
+  lastHitTime: number;
 }
 
 interface TravelingNote {
@@ -69,6 +89,8 @@ let puckSpeedMultiplier = 1;
 /** User-adjustable: 1 = default instrument speed. */
 let instrumentSpeedMultiplier = 1;
 
+/** Master gain for all instruments; set in createInstruments so piano Sampler can connect on load. */
+let masterGain: Tone.Gain | null = null;
 function resize(): void {
   width = window.innerWidth;
   height = window.innerHeight;
@@ -77,11 +99,13 @@ function resize(): void {
   layoutInstruments();
 }
 
+const NUM_INSTRUMENTS = 6;
+
 function layoutInstruments(): void {
   const centerX = width / 2;
   const centerY = height / 2;
   const r = Math.min(width, height) * 0.32;
-  const n = 5;
+  const n = NUM_INSTRUMENTS;
   const positions: { x: number; y: number }[] = [];
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2 - Math.PI / 2;
@@ -124,52 +148,109 @@ function updateInstruments(): void {
   });
 }
 
-const INSTRUMENT_PATTERNS: string[][] = [
-  ["C4", "E4", "G4", "B4", "C5"],
-  ["D4", "F#4", "A4", "C#5", "D5"],
-  ["G3", "Bb3", "D4", "F4", "G4"],
-  ["A3", "C4", "E4", "G4", "A4"],
-  ["E2", "G2", "B2", "E3", "G3"],
+/** Per-instrument riffs: melody/bass/drums roles in C minor. Each step has note + Tone duration. */
+const INSTRUMENT_RIFFS: RiffNote[][] = [
+  // Piano: comping chord tones
+  [
+    { note: "Eb4", dur: "8n" },
+    { note: "G4", dur: "8n" },
+    { note: "Bb4", dur: "8n" },
+    { note: "G4", dur: "8n" },
+    { note: "C4", dur: "4n" },
+  ],
+  // Bass: walking
+  [
+    { note: "C2", dur: "4n" },
+    { note: "Eb2", dur: "4n" },
+    { note: "G2", dur: "4n" },
+    { note: "Bb2", dur: "4n" },
+    { note: "C3", dur: "2n" },
+  ],
+  // Drums: groove (pitched as low toms)
+  [
+    { note: "D3", dur: "8n" },
+    { note: "F3", dur: "8n" },
+    { note: "D3", dur: "8n" },
+    { note: "F3", dur: "8n" },
+    { note: "G3", dur: "4n" },
+  ],
+  // Trumpet: short phrase
+  [
+    { note: "G4", dur: "8n" },
+    { note: "Bb4", dur: "8n" },
+    { note: "C5", dur: "4n" },
+    { note: "Bb4", dur: "8n" },
+    { note: "G4", dur: "2n" },
+  ],
+  // Sax: melody
+  [
+    { note: "Eb4", dur: "8n" },
+    { note: "F4", dur: "8n" },
+    { note: "G4", dur: "4n" },
+    { note: "Bb4", dur: "8n" },
+    { note: "C5", dur: "4n" },
+  ],
+  // Guitar: chord stab
+  [
+    { note: "G3", dur: "8n" },
+    { note: "Bb3", dur: "8n" },
+    { note: "C4", dur: "4n" },
+    { note: "Eb4", dur: "8n" },
+    { note: "G4", dur: "2n" },
+  ],
 ];
 
-/** Per-instrument gain trim so perceived volume is roughly equal (timbre, not level, distinguishes). */
-const INSTRUMENT_GAIN_TRIMS = [0.65, 1.0, 0.75, 0.65, 1.0];
+/** Per-instrument gain trim so perceived volume is roughly equal. */
+const INSTRUMENT_GAIN_TRIMS = [0.6, 1.0, 0.8, 0.65, 0.7, 0.6];
 
 function createInstruments(positions: { x: number; y: number }[]): InstrumentDef[] {
-  const masterGain = new Tone.Gain(0.32).toDestination();
-  const colors = ["#5b9bd5", "#d4755b", "#5bd47a", "#d4a85b", "#9b5bd4"];
-  const labels = ["Synth", "AM", "Pluck", "FM", "Bass"];
-  const synths: SynthLike[] = [
+  masterGain = new Tone.Gain(0.32).toDestination();
+  const colors = ["#5b9bd5", "#8b7355", "#5bd47a", "#d4a85b", "#9b5bd4", "#c95b5b"];
+  const labels = ["Piano", "Bass", "Drums", "Trumpet", "Sax", "Guitar"];
+  const synths: InstrumentSound[] = [
+    // Piano: percussive attack, short decay, low sustain (hammer strike)
     new Tone.PolySynth(Tone.Synth, {
-      oscillator: { type: "sawtooth" },
-      envelope: { attack: 0.02, decay: 0.2, sustain: 0.4, release: 0.3 },
+      oscillator: { type: "triangle" },
+      envelope: { attack: 0.005, decay: 0.25, sustain: 0.15, release: 0.35 },
     }),
-    new Tone.AMSynth({
-      oscillator: { type: "sine" },
-      envelope: { attack: 0.01, decay: 0.15, sustain: 0.6, release: 0.4 },
-    }),
-    new Tone.PluckSynth({
-      attackNoise: 0.5,
-      dampening: 4000,
-      resonance: 0.9,
-      release: 0.3,
-    }),
-    new Tone.FMSynth({
-      harmonicity: 3,
-      modulationIndex: 12,
-      envelope: { attack: 0.05, decay: 0.2, sustain: 0.3, release: 0.4 },
-    }),
+    // Bass: deep, round (upright/double bass)
     new Tone.MonoSynth({
       oscillator: { type: "triangle" },
-      filter: { type: "lowpass", frequency: 800 },
+      filter: { type: "lowpass", frequency: 600 },
       envelope: { attack: 0.02, decay: 0.4, sustain: 0.5, release: 0.5 },
+    }),
+    // Drums: percussive, short decay (tom/snare-like)
+    new Tone.PluckSynth({
+      attackNoise: 0.6,
+      dampening: 5000,
+      resonance: 0.85,
+      release: 0.25,
+    }),
+    // Trumpet: brassy, breathy attack
+    new Tone.FMSynth({
+      harmonicity: 3,
+      modulationIndex: 14,
+      envelope: { attack: 0.06, decay: 0.2, sustain: 0.35, release: 0.35 },
+    }),
+    // Sax: reedy (FM with lower harmonicity than trumpet)
+    new Tone.FMSynth({
+      harmonicity: 1.8,
+      modulationIndex: 10,
+      envelope: { attack: 0.03, decay: 0.25, sustain: 0.5, release: 0.4 },
+    }),
+    // Guitar: plucked string
+    new Tone.PluckSynth({
+      attackNoise: 0.4,
+      dampening: 3000,
+      resonance: 0.95,
+      release: 0.4,
     }),
   ];
   synths.forEach((synth, i) => {
     const trim = INSTRUMENT_GAIN_TRIMS[i] ?? 1;
     const instGain = new Tone.Gain(trim);
     synth.connect(instGain);
-    instGain.connect(masterGain);
+    instGain.connect(masterGain!);
   });
   return positions.map((p, i) => {
     let vx = (Math.random() - 0.5) * 2 * INSTRUMENT_SPEED;
@@ -187,22 +268,26 @@ function createInstruments(positions: { x: number; y: number }[]): InstrumentDef
       synth: synths[i]!,
       loop: null,
       touchCount: 0,
+      lastHitTime: 0,
     };
   });
 }
 
-function getPatternNotes(inst: InstrumentDef): string[] {
-  const base = INSTRUMENT_PATTERNS[inst.id] ?? INSTRUMENT_PATTERNS[0]!;
-  return inst.id % 2 === 0 ? [...base] : [...base].reverse();
+function getRiff(inst: InstrumentDef): RiffNote[] {
+  const base = INSTRUMENT_RIFFS[inst.id] ?? INSTRUMENT_RIFFS[0]!;
+  if (keySemitones === 0) return base;
+  return base.map((r) => ({ note: transposeNote(r.note, keySemitones), dur: r.dur }));
 }
 
 function playPatternNow(inst: InstrumentDef): void {
-  const notes = getPatternNotes(inst);
+  const riff = getRiff(inst);
   const synth = inst.synth;
-  const interval = 0.12 + inst.id * 0.02;
-  notes.forEach((note, i) => {
+  let time = Tone.now();
+  riff.forEach((r) => {
+    const durSec = Tone.Time(r.dur).toSeconds();
     (synth as { triggerAttackRelease(note: string, dur: string, time?: number): void })
-      .triggerAttackRelease(note, "8n", Tone.now() + i * interval);
+      .triggerAttackRelease(r.note, r.dur, time);
+    time += durSec;
   });
 }
 
@@ -211,17 +296,19 @@ function makePattern(inst: InstrumentDef): void {
     inst.loop.dispose();
     inst.loop = null;
   }
-  const notes = getPatternNotes(inst);
+  const riff = getRiff(inst);
   const synth = inst.synth;
-  const interval = 0.18 + inst.id * 0.02;
-  const loopDur = inst.id === 4 ? "1n" : "2n";
-  const startTime = Tone.Transport.seconds;
+  const totalRiffSec = riff.reduce((sum, r) => sum + Tone.Time(r.dur).toSeconds(), 0);
+  const startTime = Math.max(0, Tone.Transport.seconds + 0.02);
   inst.loop = new Tone.Loop((time) => {
-    notes.forEach((note, i) => {
+    let t = time;
+    riff.forEach((r) => {
+      const durSec = Tone.Time(r.dur).toSeconds();
       (synth as { triggerAttackRelease(note: string, dur: string, time: number): void })
-        .triggerAttackRelease(note, "8n", time + i * interval);
+        .triggerAttackRelease(r.note, r.dur, t);
+      t += durSec;
     });
-  }, loopDur).start(startTime);
+  }, totalRiffSec).start(startTime);
 }
 
 function stopInstrument(inst: InstrumentDef): void {
@@ -247,6 +334,7 @@ function triggerInstrument(id: number, chain: boolean): void {
   if (!inst || !audioStarted) return;
   inst.touchCount += 1;
   if (inst.touchCount % 2 === 1) {
+    inst.lastHitTime = performance.now() * 0.001;
     playPatternNow(inst);
     makePattern(inst);
   } else {
@@ -340,10 +428,72 @@ function isInstrumentPlaying(inst: InstrumentDef): boolean {
   return inst.touchCount % 2 === 1;
 }
 
+/**
+ * SVG path strings for instrument icons (24x24 viewBox, center 12,12).
+ * Each path is drawn with fill then stroke; multi-part paths share one fill color.
+ */
+const INSTRUMENT_ICON_PATHS: string[] = [
+  // 0 Piano: keyboard body
+  "M 2 8 L 22 8 L 22 16 L 2 16 Z",
+  // 1 Bass: upright body and neck outline
+  "M 9 11 Q 9 20 12 21 Q 15 20 15 11 Q 15 4 12 3 Q 9 4 9 11 Z",
+  // 2 Drums: drum head
+  "M 12 12 m -8 0 a 8 8 0 1 1 16 0 a 8 8 0 1 1 -16 0",
+  // 3 Trumpet: mouthpiece + valve block + bell
+  "M 3 12 L 9 10 L 9 14 Z M 9 12 L 14 11 L 14 13 L 9 12 M 14 12 L 20 10 L 23 12 L 20 14 Z",
+  // 4 Sax: silhouette (neck, body, upturned bell)
+  "M 3 12 Q 5 8 9 7 Q 13 6 16 9 L 20 7 L 22 10 L 20 14 Q 17 17 13 18 Q 9 19 6 16 Q 4 14 3 12 Z",
+  // 5 Guitar: body
+  "M 12 5 L 12 19 M 8 19 Q 12 23 16 19 Q 16 13 12 9 Q 8 13 8 19 Z",
+];
+/** Stroke-only paths for details (keys, neck, valves, etc.); drawn after main path. */
+const INSTRUMENT_ICON_STROKES: string[] = [
+  "M 5 7 L 5 17 M 8 7 L 8 17 M 11 7 L 11 17 M 14 7 L 14 17 M 17 7 L 17 17 M 20 7 L 20 17",
+  "M 12 3 L 12 21",
+  "M 12 12 m -4 0 a 4 4 0 1 1 8 0 a 4 4 0 1 1 -8 0",
+  "M 11 11 L 11 13 M 14 11 L 14 13 M 17 11 L 17 13",
+  "M 8 10 L 10 8 M 14 12 L 16 10 M 19 12 L 21 10",
+  "M 12 8 L 16 6 L 16 10",
+];
+
+/** Draw instrument icon from Path2D (centered at x,y, scaled to fit inside radius r). */
+function drawInstrumentAvatar(ctx: CanvasRenderingContext2D, id: number, x: number, y: number, r: number, color: string): void {
+  const s = r * 0.5;
+  const scale = s / 12;
+  const lw = Math.max(1, 2 / scale);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.translate(-12, -12);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = "#2a2a2a";
+  ctx.lineWidth = lw;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  const mainPath = new Path2D(INSTRUMENT_ICON_PATHS[id] ?? INSTRUMENT_ICON_PATHS[0]!);
+  ctx.fill(mainPath);
+  ctx.stroke(mainPath);
+
+  const strokePathStr = INSTRUMENT_ICON_STROKES[id];
+  if (strokePathStr) {
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.stroke(new Path2D(strokePathStr));
+  }
+  ctx.restore();
+}
+
 function draw(): void {
-  ctx.fillStyle = "#0d0d12";
-  ctx.fillRect(0, 0, width, height);
   const t = performance.now() * 0.001;
+  const nowSec = t;
+
+  const bgGradient = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height) * 0.6);
+  bgGradient.addColorStop(0, "#12121a");
+  bgGradient.addColorStop(0.5, "#0d0d12");
+  bgGradient.addColorStop(1, "#08080c");
+  ctx.fillStyle = bgGradient;
+  ctx.fillRect(0, 0, width, height);
+
   instruments.forEach((inst) => {
     const playing = isInstrumentPlaying(inst);
     const phase = inst.id * 1.2;
@@ -364,13 +514,31 @@ function draw(): void {
     ctx.strokeStyle = "#444";
     ctx.lineWidth = 2;
     ctx.stroke();
+
+    if (nowSec - inst.lastHitTime < HIT_FEEDBACK_DURATION_S && inst.lastHitTime > 0) {
+      const alpha = 1 - (nowSec - inst.lastHitTime) / HIT_FEEDBACK_DURATION_S;
+      ctx.strokeStyle = `rgba(255, 255, 200, ${alpha * 0.9})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(inst.x, inst.y, radius + 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    drawInstrumentAvatar(ctx, inst.id, inst.x, inst.y, inst.radius, "#fff");
+
     ctx.fillStyle = "#fff";
-    ctx.font = "12px sans-serif";
+    ctx.font = "11px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(inst.label, inst.x, inst.y);
+    ctx.fillText(inst.label, inst.x, inst.y + inst.radius - 10);
   });
+
   travelingNotes.forEach((note) => {
+    const glowR = NOTE_RADIUS * 2.2;
+    ctx.beginPath();
+    ctx.arc(note.x, note.y, glowR, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(232, 224, 200, 0.35)";
+    ctx.fill();
     ctx.beginPath();
     ctx.arc(note.x, note.y, NOTE_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = "#e8e0c8";
@@ -414,9 +582,29 @@ function handleClick(e: MouseEvent): void {
   }
 }
 
+/** Sparse piano sample map (casio set); Sampler repitches to cover riff range. */
+const PIANO_SAMPLER_URLS: Record<string, string> = {
+  A1: "A1.mp3",
+  "A#1": "As1.mp3",
+  B1: "B1.mp3",
+  C2: "C2.mp3",
+  "C#2": "Cs2.mp3",
+  D2: "D2.mp3",
+  "D#2": "Ds2.mp3",
+  E2: "E2.mp3",
+  F2: "F2.mp3",
+  "F#2": "Fs2.mp3",
+  G2: "G2.mp3",
+  "G#2": "Gs2.mp3",
+  A2: "A2.mp3",
+};
+
+const PIANO_SAMPLER_BASE_URL = "https://tonejs.github.io/audio/casio/";
+
 function startAudio(): void {
   if (audioStarted) return;
   Tone.start().then(() => {
+    Tone.Transport.bpm.value = parseFloat(bpmInput.value) || 100;
     Tone.Transport.start();
     audioStarted = true;
     demoRunning = true;
@@ -425,6 +613,27 @@ function startAudio(): void {
     quitBtn.textContent = "Quit";
     speedPanel.classList.remove("speed-panel-hidden");
     sendNote(0, 1);
+
+    if (instruments.length > 0 && masterGain) {
+      const pianoSampler = new Tone.Sampler({
+        urls: PIANO_SAMPLER_URLS,
+        baseUrl: PIANO_SAMPLER_BASE_URL,
+        onload: () => {
+          const inst = instruments[0];
+          if (!inst || !masterGain) return;
+          const oldSynth = inst.synth;
+          if (oldSynth && "dispose" in oldSynth) {
+            oldSynth.disconnect();
+            oldSynth.dispose();
+          }
+          const trim = INSTRUMENT_GAIN_TRIMS[0] ?? 1;
+          const pianoGain = new Tone.Gain(trim);
+          pianoSampler.connect(pianoGain);
+          pianoGain.connect(masterGain);
+          inst.synth = pianoSampler;
+        },
+      });
+    }
   });
 }
 
@@ -467,13 +676,28 @@ const quitBtn = document.getElementById("quit-btn") as HTMLButtonElement;
 const quitOverlay = document.getElementById("quit-overlay") as HTMLDivElement;
 const quitCloseBtn = document.getElementById("quit-close-btn") as HTMLButtonElement;
 const speedPanel = document.getElementById("speed-panel") as HTMLDivElement;
+const panelToggle = document.getElementById("panel-toggle") as HTMLButtonElement;
+const bpmInput = document.getElementById("bpm") as HTMLInputElement;
+const keySelect = document.getElementById("key") as HTMLSelectElement;
 const puckSpeedInput = document.getElementById("puck-speed") as HTMLInputElement;
 const instrumentSpeedInput = document.getElementById("instrument-speed") as HTMLInputElement;
 
 startBtn.addEventListener("click", startAudio);
+panelToggle.addEventListener("click", () => {
+  const minimized = speedPanel.classList.toggle("speed-panel-minimized");
+  panelToggle.textContent = minimized ? "+" : "−";
+  panelToggle.title = minimized ? "Expand panel" : "Collapse panel";
+  panelToggle.setAttribute("aria-label", minimized ? "Expand controls panel" : "Collapse controls panel");
+});
 canvas.addEventListener("click", handleClick);
 quitBtn.addEventListener("click", handleQuitOrStart);
 quitCloseBtn.addEventListener("click", hideQuitOverlay);
+bpmInput.addEventListener("input", () => {
+  Tone.Transport.bpm.value = parseFloat(bpmInput.value) || 100;
+});
+keySelect.addEventListener("change", () => {
+  keySemitones = parseInt(keySelect.value, 10) || 0;
+});
 puckSpeedInput.addEventListener("input", () => {
   puckSpeedMultiplier = parseFloat(puckSpeedInput.value) || 1;
 });

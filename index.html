@@ -12,11 +12,36 @@
         <button type="button" id="start-btn">Start audio</button>
         <p id="hint">Click an instrument to send a note to the next one. Notes travel and add layers when they arrive.</p>
       </div>
-      <div id="speed-panel" class="speed-panel-hidden">
-        <label for="puck-speed">Puck speed</label>
-        <input type="range" id="puck-speed" min="0.25" max="2" step="0.25" value="1" />
-        <label for="instrument-speed">Instrument speed</label>
-        <input type="range" id="instrument-speed" min="0.25" max="2" step="0.25" value="1" />
+      <div id="speed-panel" class="speed-panel-hidden" aria-label="Music and display controls">
+        <div id="controls-header">
+          <p id="controls-heading">Controls</p>
+          <button type="button" id="panel-toggle" title="Collapse panel" aria-label="Collapse controls panel">−</button>
+        </div>
+        <div id="controls-body">
+          <label for="bpm" title="Tempo: beats per minute. Higher = faster music (e.g. 80 ballad, 120 medium, 140 upbeat).">Tempo (BPM)</label>
+          <input type="range" id="bpm" min="60" max="140" step="5" value="100" aria-describedby="bpm-desc" />
+          <span id="bpm-desc" class="control-desc">Tempo: 60–140 beats per minute (higher = faster).</span>
+          <label for="key" title="All instrument riffs are transposed to this key so layers stay in harmony.">Key</label>
+          <select id="key" aria-describedby="key-desc">
+            <option value="0">C</option>
+            <option value="1">C#</option>
+            <option value="2">D</option>
+            <option value="3">D#</option>
+            <option value="4">E</option>
+            <option value="5">F</option>
+            <option value="6">F#</option>
+            <option value="7">G</option>
+            <option value="8">G#</option>
+            <option value="9">A</option>
+            <option value="10">A#</option>
+            <option value="11">B</option>
+          </select>
+          <span id="key-desc" class="control-desc">Tonal center; all riffs transpose to this key.</span>
+          <label for="puck-speed">Puck speed</label>
+          <input type="range" id="puck-speed" min="0.25" max="2" step="0.25" value="1" />
+          <label for="instrument-speed">Instrument speed</label>
+          <input type="range" id="instrument-speed" min="0.25" max="2" step="0.25" value="1" />
+        </div>
       </div>
       <button type="button" id="quit-btn">Quit</button>
       <div id="quit-overlay" class="hidden">
