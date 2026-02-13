@@ -23,6 +23,8 @@ A browser-based spatial music visualization. Instruments move on the canvas and 
    ```
    Open the URL shown (e.g. http://localhost:5173). Click "Start audio" to enable sound, then click instruments or watch the puck.
 
+**Controls:** After starting, use the top-left sliders to adjust puck speed and instrument speed (0.25x to 2x). Use "Quit" to stop; the button then becomes "Start" so you can restart the demo. Instruments are balanced by timbre (not volume) so they stay distinct by sound.
+
 **Optional:** Run `python3 start.py` to start the dev server and stop it with Ctrl+C in the same terminal.
 
 ## Scripts

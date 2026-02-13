@@ -132,36 +132,45 @@ const INSTRUMENT_PATTERNS: string[][] = [
   ["E2", "G2", "B2", "E3", "G3"],
 ];
 
+/** Per-instrument gain trim so perceived volume is roughly equal (timbre, not level, distinguishes). */
+const INSTRUMENT_GAIN_TRIMS = [0.65, 1.0, 0.75, 0.65, 1.0];
+
 function createInstruments(positions: { x: number; y: number }[]): InstrumentDef[] {
-  const gain = new Tone.Gain(0.32).toDestination();
+  const masterGain = new Tone.Gain(0.32).toDestination();
   const colors = ["#5b9bd5", "#d4755b", "#5bd47a", "#d4a85b", "#9b5bd4"];
   const labels = ["Synth", "AM", "Pluck", "FM", "Bass"];
   const synths: SynthLike[] = [
     new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: "sawtooth" },
       envelope: { attack: 0.02, decay: 0.2, sustain: 0.4, release: 0.3 },
-    }).connect(gain),
+    }),
     new Tone.AMSynth({
       oscillator: { type: "sine" },
       envelope: { attack: 0.01, decay: 0.15, sustain: 0.6, release: 0.4 },
-    }).connect(gain),
+    }),
     new Tone.PluckSynth({
       attackNoise: 0.5,
       dampening: 4000,
       resonance: 0.9,
       release: 0.3,
-    }).connect(gain),
+    }),
     new Tone.FMSynth({
       harmonicity: 3,
       modulationIndex: 12,
       envelope: { attack: 0.05, decay: 0.2, sustain: 0.3, release: 0.4 },
-    }).connect(gain),
+    }),
     new Tone.MonoSynth({
       oscillator: { type: "triangle" },
       filter: { type: "lowpass", frequency: 800 },
       envelope: { attack: 0.02, decay: 0.4, sustain: 0.5, release: 0.5 },
-    }).connect(gain),
+    }),
   ];
+  synths.forEach((synth, i) => {
+    const trim = INSTRUMENT_GAIN_TRIMS[i] ?? 1;
+    const instGain = new Tone.Gain(trim);
+    synth.connect(instGain);
+    instGain.connect(masterGain);
+  });
   return positions.map((p, i) => {
     let vx = (Math.random() - 0.5) * 2 * INSTRUMENT_SPEED;
     let vy = (Math.random() - 0.5) * 2 * INSTRUMENT_SPEED;
