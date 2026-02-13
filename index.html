@@ -12,6 +12,12 @@
         <button type="button" id="start-btn">Start audio</button>
         <p id="hint">Click an instrument to send a note to the next one. Notes travel and add layers when they arrive.</p>
       </div>
+      <div id="speed-panel" class="speed-panel-hidden">
+        <label for="puck-speed">Puck speed</label>
+        <input type="range" id="puck-speed" min="0.25" max="2" step="0.25" value="1" />
+        <label for="instrument-speed">Instrument speed</label>
+        <input type="range" id="instrument-speed" min="0.25" max="2" step="0.25" value="1" />
+      </div>
       <button type="button" id="quit-btn">Quit</button>
       <div id="quit-overlay" class="hidden">
         <p>Music stopped. Close this browser tab to exit the demo.</p>

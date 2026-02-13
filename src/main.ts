@@ -62,6 +62,10 @@ let audioStarted = false;
 let quitted = false;
 let frameCount = 0;
 let lastDebugLogTime = 0;
+/** User-adjustable: 1 = default puck speed. */
+let puckSpeedMultiplier = 1;
+/** User-adjustable: 1 = default instrument speed. */
+let instrumentSpeedMultiplier = 1;
 
 function resize(): void {
   width = window.innerWidth;
@@ -95,9 +99,10 @@ function layoutInstruments(): void {
 }
 
 function updateInstruments(): void {
+  const scale = instrumentSpeedMultiplier;
   instruments.forEach((inst) => {
-    inst.x += inst.vx;
-    inst.y += inst.vy;
+    inst.x += inst.vx * scale;
+    inst.y += inst.vy * scale;
     if (inst.x - inst.radius < 0) {
       inst.x = inst.radius;
       inst.vx = -inst.vx;
@@ -287,7 +292,8 @@ function updateNotes(): void {
     }
 
     const safeDist = Math.max(dist, minDist);
-    const moveAmount = Math.min(PUCK_SPEED, dist);
+    const puckSpeed = Math.max(0.5, PUCK_SPEED * puckSpeedMultiplier);
+    const moveAmount = Math.min(puckSpeed, dist);
     const xNew = note.x + (dx / safeDist) * moveAmount;
     const yNew = note.y + (dy / safeDist) * moveAmount;
 
@@ -403,6 +409,7 @@ function startAudio(): void {
     audioStarted = true;
     overlay.classList.add("hidden");
     quitBtn.classList.add("visible");
+    speedPanel.classList.remove("speed-panel-hidden");
     sendNote(0, 1);
   });
 }
@@ -427,11 +434,20 @@ function hideQuitOverlay(): void {
 const quitBtn = document.getElementById("quit-btn") as HTMLButtonElement;
 const quitOverlay = document.getElementById("quit-overlay") as HTMLDivElement;
 const quitCloseBtn = document.getElementById("quit-close-btn") as HTMLButtonElement;
+const speedPanel = document.getElementById("speed-panel") as HTMLDivElement;
+const puckSpeedInput = document.getElementById("puck-speed") as HTMLInputElement;
+const instrumentSpeedInput = document.getElementById("instrument-speed") as HTMLInputElement;
 
 startBtn.addEventListener("click", startAudio);
 canvas.addEventListener("click", handleClick);
 quitBtn.addEventListener("click", quit);
 quitCloseBtn.addEventListener("click", hideQuitOverlay);
+puckSpeedInput.addEventListener("input", () => {
+  puckSpeedMultiplier = parseFloat(puckSpeedInput.value) || 1;
+});
+instrumentSpeedInput.addEventListener("input", () => {
+  instrumentSpeedMultiplier = parseFloat(instrumentSpeedInput.value) || 1;
+});
 window.addEventListener("resize", resize);
 
 resize();
